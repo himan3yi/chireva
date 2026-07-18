@@ -414,7 +414,6 @@ footer{background:#150F26;color:#fff;padding:70px 0 26px;}
 </div>
 
 <div class="announce-bar" id="announceBar"></div>
-<div id="dbErrorBanner" style="display:none;background:#B91C1C;color:#fff;font-family:'Outfit',sans-serif;font-size:13.5px;font-weight:600;text-align:center;padding:10px 16px;"></div>
 
 <header id="navbar">
   <div class="navwrap">
@@ -668,12 +667,15 @@ footer{background:#150F26;color:#fff;padding:70px 0 26px;}
 
         <hr style="border:none;border-top:1px solid var(--line);margin:8px 0;">
         <div class="field full" style="margin:0;">
-          <label>Database — Supabase</label>
-          <span class="conn-status off" id="connStatus" style="margin-bottom:12px;display:inline-flex;">● Checking connection…</span>
-          <small id="connStatusDetail">This site is a shared Supabase-only database — every browser and device that loads this page reads and writes the same tables. The project URL and anon key are set directly in the page's script (SUPABASE_URL / SUPABASE_ANON_KEY near the top of the &lt;script&gt; tag), so there's nothing to configure per-device.</small>
+          <label>Database — Supabase (optional)</label>
+          <span class="conn-status off" id="connStatus" style="margin-bottom:12px;display:inline-flex;">● Using local storage</span>
+          <small>Leave blank to keep running fully offline on this browser. Connect a Supabase project to sync products, categories and settings to real Postgres tables — see the SQL schema comment at the top of the page's script for the exact tables to create.</small>
         </div>
-        <div class="field full" style="margin:0;">
-          <button class="btn btn-ghost btn-sm" id="retryConnectionBtn" type="button">Test / Retry Connection</button>
+        <div class="field"><label>Supabase Project URL</label><input type="text" id="set-supa-url" placeholder="https://xxxx.supabase.co"></div>
+        <div class="field"><label>Supabase Anon Public Key</label><input type="text" id="set-supa-key" placeholder="eyJhbGciOi..."></div>
+        <div class="field full" style="display:flex;gap:10px;margin:0;">
+          <button class="btn btn-primary btn-sm" id="connectSupabaseBtn" type="button">Connect &amp; Sync</button>
+          <button class="btn btn-ghost btn-sm" id="disconnectSupabaseBtn" type="button">Disconnect</button>
         </div>
       </div>
     </div>
@@ -767,25 +769,12 @@ const Utils = {
 };
 
 /* =========================================================================
-   SUPABASE CONFIG
-   -------------------------------------------------------------------------
-   Put your project's real values here. These are baked into the page itself
-   (NOT stored in localStorage), which is what makes every browser and every
-   device that loads this file talk to the exact same Supabase project —
-   there is no "connect" step to repeat per-browser.
-
-   Find these values in your Supabase dashboard: Project Settings → API.
-   The anon/public key is safe to ship in client-side code as long as your
-   Row Level Security (RLS) policies are set up correctly (see note below).
-   ========================================================================= */
-const SUPABASE_URL = 'https://YOUR-PROJECT-REF.supabase.co';
-const SUPABASE_ANON_KEY = 'YOUR-ANON-PUBLIC-KEY';
-
-/* =========================================================================
-   MODULE: DataStore — Supabase only. No localStorage reads, writes, or
-   fallbacks of any kind. Every get/save talks directly to Postgres.
+   MODULE: DataStore — async, Supabase-compatible, localStorage fallback.
    ========================================================================= */
 const DataStore = (() => {
+  const KEYS = { products:'chireva_products', categories:'chireva_categories', subcategories:'chireva_subcategories',
+    settings:'chireva_settings', analytics:'chireva_analytics', admin:'chireva_admin', supaCfg:'chireva_supabase_config' };
+
   const defaultSettings = { whatsapp:'919999999999', instagram:'https://instagram.com/chireva', email:'hello@chireva.in',
     announce:"✨ New gifts just dropped — browse the collection below", maintenance:false };
   const defaultAdmin = { username:'admin', password:'chireva@2026' };
@@ -811,147 +800,84 @@ const DataStore = (() => {
     {id:'p7',title:'Just Because Card',category_id:'others',subcategory_id:'others-general',price:499,description:'A sweet no-occasion-needed digital card for a Buddy or Soulmate.',tags:['others','friendship','card'],delivery:'Instant',emoji:'🎈',featured:false,popular:false,visible:true,views:0,orders:0,created:Date.now()-86400000*10},
     {id:'p8',title:'Anniversary Timeline',category_id:'anniversary',subcategory_id:'anniversary-semi-customisable',price:1099,description:'A scrollable timeline of your years together, told beautifully.',tags:['anniversary','timeline','memories'],delivery:'Within 12 hours',emoji:'🥂',featured:false,popular:true,visible:true,views:0,orders:0,created:Date.now()-86400000*6}
   ];
-  const defaultAnalytics = { totalVisits:0, todayVisits:0, todayKey:new Date().toDateString(), uniqueVisitors:0, previewClicks:0, orderClicks:0, productViews:{} };
+
+  function ensureSeed(){
+    if(!localStorage.getItem(KEYS.products)) localStorage.setItem(KEYS.products, JSON.stringify(defaultProducts));
+    if(!localStorage.getItem(KEYS.categories)) localStorage.setItem(KEYS.categories, JSON.stringify(defaultCategories));
+    if(!localStorage.getItem(KEYS.subcategories)) localStorage.setItem(KEYS.subcategories, JSON.stringify(defaultSubcategories));
+    if(!localStorage.getItem(KEYS.settings)) localStorage.setItem(KEYS.settings, JSON.stringify(defaultSettings));
+    if(!localStorage.getItem(KEYS.admin)) localStorage.setItem(KEYS.admin, JSON.stringify(defaultAdmin));
+    if(!localStorage.getItem(KEYS.analytics)) localStorage.setItem(KEYS.analytics, JSON.stringify({
+      totalVisits:0, todayVisits:0, todayKey:new Date().toDateString(), uniqueVisitors:0, previewClicks:0, orderClicks:0, productViews:{}
+    }));
+  }
+  ensureSeed();
 
   let client = null;
+  function getConfig(){ try{ return JSON.parse(localStorage.getItem(KEYS.supaCfg)||'null'); }catch(e){ return null; } }
+  function isConnected(){ return !!getConfig(); }
   function getClient(){
-    if(client) return client;
-    if(!SUPABASE_URL || !SUPABASE_ANON_KEY || SUPABASE_URL.includes('YOUR-PROJECT') || SUPABASE_ANON_KEY.includes('YOUR-ANON')){
-      throw new Error('Supabase is not configured yet. Open the page source and set SUPABASE_URL / SUPABASE_ANON_KEY near the top of the <script>.');
-    }
-    if(!window.supabase){
-      throw new Error('Supabase library has not finished loading. Please refresh the page.');
-    }
-    client = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    const cfg = getConfig();
+    if(!cfg || !cfg.url || !cfg.anonKey) return null;
+    if(!window.supabase){ return null; }
+    if(!client) client = window.supabase.createClient(cfg.url, cfg.anonKey);
     return client;
   }
-
-  // One-time-per-page-load seed: if a table is completely empty, populate it
-  // with starter content so a brand new project isn't blank. This writes
-  // straight into Supabase — never into localStorage — and only ever runs
-  // once tables are confirmed empty, so it never overwrites real data.
-  let seedChecked = false;
-  async function ensureSeed(){
-    if(seedChecked) return;
-    seedChecked = true;
+  async function connect(url, anonKey){
+    localStorage.setItem(KEYS.supaCfg, JSON.stringify({url, anonKey}));
+    client = null;
     const c = getClient();
-
-    const { count: catCount, error: catErr } = await c.from('categories').select('id', {count:'exact', head:true});
-    if(!catErr && !catCount){
-      await c.from('categories').upsert(defaultCategories);
-      await c.from('subcategories').upsert(defaultSubcategories);
-    }
-    const { count: prodCount, error: prodErr } = await c.from('products').select('id', {count:'exact', head:true});
-    if(!prodErr && !prodCount){
-      await c.from('products').upsert(defaultProducts);
-    }
-    const { data: settingsRow } = await c.from('settings').select('id').eq('id','main').maybeSingle();
-    if(!settingsRow){
-      await c.from('settings').upsert({ id:'main', ...defaultSettings });
-    }
-    const { data: adminRow } = await c.from('admin_users').select('id').eq('id','main').maybeSingle();
-    if(!adminRow){
-      await c.from('admin_users').upsert({ id:'main', ...defaultAdmin });
-    }
-    const { data: analyticsRow } = await c.from('analytics').select('id').eq('id','main').maybeSingle();
-    if(!analyticsRow){
-      await c.from('analytics').upsert({ id:'main', ...defaultAnalytics });
-    }
-  }
-
-  // Verifies the project is reachable and RLS allows reads. Throws with the
-  // real Supabase/Postgres error message on failure — never swallowed.
-  async function testConnection(){
-    const c = getClient();
+    if(!c) throw new Error('Supabase library not ready yet — try again in a moment.');
     const { error } = await c.from('settings').select('id').limit(1);
-    if(error) throw error;
-    await ensureSeed();
+    if(error) { localStorage.removeItem(KEYS.supaCfg); client = null; throw error; }
     return true;
   }
+  function disconnect(){ localStorage.removeItem(KEYS.supaCfg); client = null; }
 
-  // Fetches current ids for `table`, upserts every row in `list`, and deletes
-  // any row that used to exist but is no longer present in `list`. This is a
-  // real per-row sync (not a wipe-then-reinsert), so concurrent edits from
-  // other devices are never blown away mid-save.
-  async function syncList(table, list){
-    const c = getClient();
-    const { data: existing, error: e1 } = await c.from(table).select('id');
-    if(e1) throw e1;
-    const existingIds = new Set((existing||[]).map(r=>r.id));
-    const newIds = new Set(list.map(r=>r.id));
-    const toDelete = [...existingIds].filter(id=>!newIds.has(id));
-    if(list.length){
-      const { error: e2 } = await c.from(table).upsert(list);
-      if(e2) throw e2;
-    }
-    if(toDelete.length){
-      const { error: e3 } = await c.from(table).delete().in('id', toDelete);
-      if(e3) throw e3;
-    }
-  }
+  const local = {
+    getProducts:async()=>JSON.parse(localStorage.getItem(KEYS.products)||'[]'),
+    saveProducts:async(list)=>localStorage.setItem(KEYS.products, JSON.stringify(list)),
+    getCategories:async()=>JSON.parse(localStorage.getItem(KEYS.categories)||'[]'),
+    saveCategories:async(list)=>localStorage.setItem(KEYS.categories, JSON.stringify(list)),
+    getSubcategories:async()=>JSON.parse(localStorage.getItem(KEYS.subcategories)||'[]'),
+    saveSubcategories:async(list)=>localStorage.setItem(KEYS.subcategories, JSON.stringify(list)),
+    getSettings:async()=>JSON.parse(localStorage.getItem(KEYS.settings)||'{}'),
+    saveSettings:async(s)=>localStorage.setItem(KEYS.settings, JSON.stringify(s)),
+    getAdmin:async()=>JSON.parse(localStorage.getItem(KEYS.admin)||'{}'),
+    saveAdmin:async(a)=>localStorage.setItem(KEYS.admin, JSON.stringify(a)),
+    getAnalytics:async()=>JSON.parse(localStorage.getItem(KEYS.analytics)||'{}'),
+    saveAnalytics:async(a)=>localStorage.setItem(KEYS.analytics, JSON.stringify(a))
+  };
+  const remote = {
+    async getProducts(){ const {data,error}=await getClient().from('products').select('*').order('created',{ascending:false}); if(error) throw error; return data; },
+    async saveProducts(list){ const c=getClient(); await c.from('products').delete().neq('id',''); if(list.length) await c.from('products').insert(list); },
+    async getCategories(){ const {data,error}=await getClient().from('categories').select('*').order('sort_order'); if(error) throw error; return data; },
+    async saveCategories(list){ const c=getClient(); await c.from('categories').delete().neq('id',''); if(list.length) await c.from('categories').insert(list); },
+    async getSubcategories(){ const {data,error}=await getClient().from('subcategories').select('*').order('sort_order'); if(error) throw error; return data; },
+    async saveSubcategories(list){ const c=getClient(); await c.from('subcategories').delete().neq('id',''); if(list.length) await c.from('subcategories').insert(list); },
+    async getSettings(){ const {data,error}=await getClient().from('settings').select('*').eq('id','main').maybeSingle(); if(error) throw error; return data||{}; },
+    async saveSettings(s){ await getClient().from('settings').upsert({id:'main', ...s}); },
+    async getAdmin(){ const {data,error}=await getClient().from('admin_users').select('*').eq('id','main').maybeSingle(); if(error) throw error; return data||{}; },
+    async saveAdmin(a){ await getClient().from('admin_users').upsert({id:'main', ...a}); },
+    async getAnalytics(){ const {data,error}=await getClient().from('analytics').select('*').eq('id','main').maybeSingle(); if(error) throw error; return data||{}; },
+    async saveAnalytics(a){ await getClient().from('analytics').upsert({id:'main', ...a}); }
+  };
+  function backend(){ return (isConnected() && getClient()) ? remote : local; }
 
   return {
-    testConnection,
-
-    async getProducts(){
-      const c = getClient(); await ensureSeed();
-      const { data, error } = await c.from('products').select('*').order('created', {ascending:false});
-      if(error) throw error;
-      return data || [];
-    },
-    async saveProducts(list){ await syncList('products', list); },
-
-    async getCategories(){
-      const c = getClient(); await ensureSeed();
-      const { data, error } = await c.from('categories').select('*').order('sort_order');
-      if(error) throw error;
-      return data || [];
-    },
-    async saveCategories(list){ await syncList('categories', list); },
-
-    async getSubcategories(){
-      const c = getClient(); await ensureSeed();
-      const { data, error } = await c.from('subcategories').select('*').order('sort_order');
-      if(error) throw error;
-      return data || [];
-    },
-    async saveSubcategories(list){ await syncList('subcategories', list); },
-
-    async getSettings(){
-      const c = getClient(); await ensureSeed();
-      const { data, error } = await c.from('settings').select('*').eq('id','main').maybeSingle();
-      if(error) throw error;
-      return data || {};
-    },
-    async saveSettings(s){
-      const c = getClient();
-      const { error } = await c.from('settings').upsert({ id:'main', ...s });
-      if(error) throw error;
-    },
-
-    async getAdmin(){
-      const c = getClient(); await ensureSeed();
-      const { data, error } = await c.from('admin_users').select('*').eq('id','main').maybeSingle();
-      if(error) throw error;
-      return data || {};
-    },
-    async saveAdmin(a){
-      const c = getClient();
-      const { error } = await c.from('admin_users').upsert({ id:'main', ...a });
-      if(error) throw error;
-    },
-
-    async getAnalytics(){
-      const c = getClient(); await ensureSeed();
-      const { data, error } = await c.from('analytics').select('*').eq('id','main').maybeSingle();
-      if(error) throw error;
-      return data || {};
-    },
-    async saveAnalytics(a){
-      const c = getClient();
-      const { error } = await c.from('analytics').upsert({ id:'main', ...a });
-      if(error) throw error;
-    }
+    isConnected, connect, disconnect,
+    getProducts: async()=>{ try{ return await backend().getProducts(); }catch(e){ console.warn('Falling back to local products:',e); return local.getProducts(); } },
+    saveProducts: async(list)=>{ try{ await backend().saveProducts(list); }catch(e){ console.warn('Supabase save failed, saving locally:',e); } await local.saveProducts(list); },
+    getCategories: async()=>{ try{ return await backend().getCategories(); }catch(e){ return local.getCategories(); } },
+    saveCategories: async(list)=>{ try{ await backend().saveCategories(list); }catch(e){} await local.saveCategories(list); },
+    getSubcategories: async()=>{ try{ return await backend().getSubcategories(); }catch(e){ return local.getSubcategories(); } },
+    saveSubcategories: async(list)=>{ try{ await backend().saveSubcategories(list); }catch(e){} await local.saveSubcategories(list); },
+    getSettings: async()=>{ try{ const r=await backend().getSettings(); return (r&&r.whatsapp)?r:local.getSettings(); }catch(e){ return local.getSettings(); } },
+    saveSettings: async(s)=>{ try{ await backend().saveSettings(s); }catch(e){} await local.saveSettings(s); },
+    getAdmin: async()=>{ try{ const r=await backend().getAdmin(); return (r&&r.username)?r:local.getAdmin(); }catch(e){ return local.getAdmin(); } },
+    saveAdmin: async(a)=>{ try{ await backend().saveAdmin(a); }catch(e){} await local.saveAdmin(a); },
+    getAnalytics: async()=>{ try{ const r=await backend().getAnalytics(); return (r&&Object.keys(r).length)?r:local.getAnalytics(); }catch(e){ return local.getAnalytics(); } },
+    saveAnalytics: async(a)=>{ try{ await backend().saveAnalytics(a); }catch(e){} await local.saveAnalytics(a); }
   };
 })();
 
@@ -1371,7 +1297,7 @@ const Admin = (() => {
     try{
       await Catalog.refreshAll();
       populateAdminCatFilter();
-      await renderDashboard(); await renderProductRows(); await renderCategoryBlocks(); await loadSettingsForm(); await refreshConnStatus();
+      await renderDashboard(); await renderProductRows(); await renderCategoryBlocks(); await loadSettingsForm(); refreshConnStatus();
     } finally {
       AdminLoading.hide();
     }
@@ -1773,18 +1699,13 @@ const Admin = (() => {
     Utils.qs('#set-maintenance-switch').classList.toggle('on', !!s.maintenance);
     Utils.qs('#set-adminuser').value = admin.username||'';
     Utils.qs('#set-adminpass').value = '';
+    const cfg = JSON.parse(localStorage.getItem('chireva_supabase_config')||'null');
+    if(cfg){ Utils.qs('#set-supa-url').value = cfg.url; Utils.qs('#set-supa-key').value = cfg.anonKey; }
   }
-  async function refreshConnStatus(){
+  function refreshConnStatus(){
     const el = Utils.qs('#connStatus');
-    const detail = Utils.qs('#connStatusDetail');
-    el.textContent='● Checking connection…'; el.className='conn-status off';
-    try{
-      await DataStore.testConnection();
-      el.textContent='● Connected to Supabase'; el.className='conn-status on';
-    }catch(e){
-      el.textContent='● Not connected'; el.className='conn-status off';
-      if(detail) detail.textContent = 'Connection error: ' + (e.message||e) + ' — check SUPABASE_URL/SUPABASE_ANON_KEY in the script, and that your RLS policies allow the anon key to read/write these tables.';
-    }
+    if(DataStore.isConnected()){ el.textContent='● Connected to Supabase'; el.className='conn-status on'; }
+    else { el.textContent='● Using local storage'; el.className='conn-status off'; }
   }
 
   Utils.qs('#settingsSave').addEventListener('click', async ()=>{
@@ -1806,16 +1727,23 @@ const Admin = (() => {
     finally { AdminLoading.hide(); }
   });
 
-  Utils.qs('#retryConnectionBtn').addEventListener('click', async ()=>{
+  Utils.qs('#connectSupabaseBtn').addEventListener('click', async ()=>{
+    const url = Utils.qs('#set-supa-url').value.trim(); const key = Utils.qs('#set-supa-key').value.trim();
+    if(!url || !key){ Toast.show('Enter both the Supabase project URL and anon key.', 'error'); return; }
     AdminLoading.show();
     try{
-      await refreshConnStatus();
-      if(Utils.qs('#connStatus').className.includes('on')){
-        Toast.show('Connected! Syncing data from Supabase…', 'success');
-        await Catalog.refreshAll(); await renderDashboard(); await renderProductRows(); await renderCategoryBlocks(); populateAdminCatFilter();
-      } else {
-        Toast.show('Still not connected — see the message below the status for details.', 'error');
-      }
+      await DataStore.connect(url, key);
+      Toast.show('Connected! Syncing data from Supabase…', 'success');
+      await Catalog.refreshAll(); await renderDashboard(); await renderProductRows(); await renderCategoryBlocks(); populateAdminCatFilter(); refreshConnStatus();
+    }catch(e){ Toast.show('Could not connect: '+(e.message||e), 'error'); }
+    finally { AdminLoading.hide(); }
+  });
+  Utils.qs('#disconnectSupabaseBtn').addEventListener('click', async ()=>{
+    AdminLoading.show();
+    try{
+      DataStore.disconnect(); refreshConnStatus();
+      await Catalog.refreshAll(); await renderDashboard(); await renderProductRows(); await renderCategoryBlocks(); populateAdminCatFilter();
+      Toast.show('Disconnected — back to local storage.', 'info');
     } finally { AdminLoading.hide(); }
   });
 
@@ -1837,17 +1765,9 @@ async function applySettingsToSite(){
 
 window.addEventListener('DOMContentLoaded', async () => {
   Utils.qs('#year').textContent = new Date().getFullYear();
-  try{
-    await DataStore.testConnection();
-    await Analytics.trackVisit();
-    await Catalog.init();
-    await applySettingsToSite();
-  }catch(e){
-    console.error('Supabase connection failed:', e);
-    const banner = Utils.qs('#dbErrorBanner');
-    banner.textContent = '⚠ Could not load data from Supabase: ' + (e.message||e);
-    banner.style.display = 'block';
-  }
+  await Analytics.trackVisit();
+  await Catalog.init();
+  await applySettingsToSite();
 
   const nav = Utils.qs('#navbar');
   window.addEventListener('scroll', ()=> nav.classList.toggle('scrolled', window.scrollY>10));
