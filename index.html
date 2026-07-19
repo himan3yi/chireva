@@ -570,13 +570,6 @@ footer{background:#150F26;color:#fff;padding:70px 0 26px;}
     <button class="btn btn-primary" style="width:100%;" id="adminLoginBtn" type="button">Login</button>
     <p class="err-msg" id="adminErr">Incorrect username or password.</p>
     <button class="btn btn-ghost btn-sm" style="margin-top:16px;" id="adminLoginCancel" type="button">Cancel</button>
-    <div id="bootstrapSupaBox" style="display:none;margin-top:18px;padding-top:16px;border-top:1px solid #eee;text-align:left;">
-      <p style="font-size:12.5px;color:#888;margin-bottom:8px;">Not connected to Supabase yet on this device. Paste your project credentials to connect (get them from Supabase → Project Settings → API):</p>
-      <div class="field"><label>Supabase Project URL</label><input type="text" id="boot-supa-url" placeholder="https://xxxx.supabase.co"></div>
-      <div class="field"><label>Supabase anon/public Key</label><input type="text" id="boot-supa-key"></div>
-      <button class="btn btn-primary btn-sm" id="bootConnectSupabaseBtn" type="button">Connect Supabase</button>
-      <p class="err-msg" id="bootConnErr">Could not connect — check the URL and key.</p>
-    </div>
   </div>
 </div>
 
@@ -596,7 +589,7 @@ footer{background:#150F26;color:#fff;padding:70px 0 26px;}
     <div class="admin-section active" id="tab-dash">
       <div class="admin-section-title">Overview</div>
       <div class="stat-grid" id="statGrid"></div>
-      <p style="font-size:12.5px;color:var(--muted);">Stats are tracked in this browser (or in Supabase, if connected in Settings → Database).</p>
+      <p style="font-size:12.5px;color:var(--muted);">Stats are tracked live in Supabase.</p>
     </div>
 
     <div class="admin-section" id="tab-prod">
@@ -674,15 +667,9 @@ footer{background:#150F26;color:#fff;padding:70px 0 26px;}
 
         <hr style="border:none;border-top:1px solid var(--line);margin:8px 0;">
         <div class="field full" style="margin:0;">
-          <label>Database — Supabase (optional)</label>
-          <span class="conn-status off" id="connStatus" style="margin-bottom:12px;display:inline-flex;">● Not connected to Supabase</span>
-          <small>Leave blank to keep running fully offline on this browser. Connect a Supabase project to sync products, categories and settings to real Postgres tables — see the SQL schema comment at the top of the page's script for the exact tables to create.</small>
-        </div>
-        <div class="field"><label>Supabase Project URL</label><input type="text" id="set-supa-url" placeholder="https://xxxx.supabase.co"></div>
-        <div class="field"><label>Supabase Anon Public Key</label><input type="text" id="set-supa-key" placeholder="eyJhbGciOi..."></div>
-        <div class="field full" style="display:flex;gap:10px;margin:0;">
-          <button class="btn btn-primary btn-sm" id="connectSupabaseBtn" type="button">Connect &amp; Sync</button>
-          <button class="btn btn-ghost btn-sm" id="disconnectSupabaseBtn" type="button">Disconnect</button>
+          <label>Database — Supabase</label>
+          <span class="conn-status on" id="connStatus" style="margin-bottom:12px;display:inline-flex;">● Connected to Supabase</span>
+          <small>This site is permanently connected to the production Supabase project. Every device reads and writes the same live data automatically — nothing to configure here.</small>
         </div>
       </div>
     </div>
@@ -798,53 +785,29 @@ const Utils = {
    ========================================================================= */
 const DataStore = (() => {
   const SUPABASE_CONFIG = {
-    url: '',      // <-- PASTE YOUR SUPABASE PROJECT URL HERE, e.g. 'https://xxxx.supabase.co'
-    anonKey: ''   // <-- PASTE YOUR SUPABASE ANON/PUBLIC KEY HERE
+    url: 'https://auhqnoqrfotnbvklsddq.supabase.co',
+    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF1aHFub3FyZm90bmJ2a2xzZGRxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQyMTUzMjksImV4cCI6MjA5OTc5MTMyOX0.YkQNVtsqk5ikjgpDhHiywLybBRDZcgaDq_f46-Ovpd8'
   };
 
-  const CFG_KEY = 'chireva_supabase_config'; // per-browser admin override only — never product/site data
-
   let client = null;
-  let clientUrl = null;
 
-  function getConfig(){
-    try{
-      const override = JSON.parse(localStorage.getItem(CFG_KEY)||'null');
-      if(override && override.url && override.anonKey) return override;
-    }catch(e){}
-    if(SUPABASE_CONFIG.url && SUPABASE_CONFIG.anonKey) return SUPABASE_CONFIG;
-    return null;
-  }
   function getClient(){
-    const cfg = getConfig();
-    if(!cfg || !cfg.url || !cfg.anonKey) return null;
     if(!window.supabase) return null;
-    if(!client || clientUrl !== cfg.url){
-      client = window.supabase.createClient(cfg.url, cfg.anonKey);
-      clientUrl = cfg.url;
+    if(!client){
+      client = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
     }
     return client;
   }
   function isConnected(){ return !!getClient(); }
-  async function connect(url, anonKey){
-    localStorage.setItem(CFG_KEY, JSON.stringify({url, anonKey}));
-    client = null; clientUrl = null;
-    const c = getClient();
-    if(!c) throw new Error('Supabase library not ready yet — try again in a moment.');
-    const { error } = await c.from('settings').select('id').limit(1);
-    if(error) { localStorage.removeItem(CFG_KEY); client = null; clientUrl = null; throw error; }
-    return true;
-  }
-  function disconnect(){ localStorage.removeItem(CFG_KEY); client = null; clientUrl = null; }
 
   function requireClient(){
     const c = getClient();
-    if(!c) throw new Error('Not connected to Supabase yet. Go to Admin → Settings and connect your Supabase project URL + anon key.');
+    if(!c) throw new Error('Supabase library not loaded yet — try again in a moment.');
     return c;
   }
 
   return {
-    isConnected, connect, disconnect,
+    isConnected,
     async getProducts(){
       const {data,error}=await requireClient().from('products').select('*').order('created',{ascending:false});
       if(error) throw error; return data||[];
@@ -960,7 +923,7 @@ const Catalog = (() => {
   function warnNotConnected(e){
     if(warnedNotConnected) return; warnedNotConnected = true;
     console.warn('DataStore error:', e);
-    if(window.Toast) Toast.show('Not connected to Supabase yet — an admin needs to connect it in Admin → Settings.', 'error');
+    if(window.Toast) Toast.show('Could not reach the database — check your internet connection and refresh.', 'error');
   }
   async function reloadTaxonomy(){
     try{ categories = await DataStore.getCategories(); subcategories = await DataStore.getSubcategories(); }
@@ -1329,24 +1292,9 @@ const Admin = (() => {
 
   function openLogin(){
     Utils.qs('#adminLoginModal').classList.add('show');
-    Utils.qs('#bootstrapSupaBox').style.display = DataStore.isConnected() ? 'none' : 'block';
   }
-  function closeLogin(){ Utils.qs('#adminLoginModal').classList.remove('show'); Utils.qs('#adminErr').style.display='none'; Utils.qs('#bootConnErr').style.display='none'; }
+  function closeLogin(){ Utils.qs('#adminLoginModal').classList.remove('show'); Utils.qs('#adminErr').style.display='none'; }
   Utils.qs('#adminEntry').addEventListener('click', openLogin);
-  Utils.qs('#bootConnectSupabaseBtn').addEventListener('click', async ()=>{
-    const url = Utils.qs('#boot-supa-url').value.trim(); const key = Utils.qs('#boot-supa-key').value.trim();
-    Utils.qs('#bootConnErr').style.display='none';
-    if(!url || !key){ Utils.qs('#bootConnErr').textContent='Enter both the Supabase project URL and anon key.'; Utils.qs('#bootConnErr').style.display='block'; return; }
-    try{
-      await DataStore.connect(url, key);
-      Utils.qs('#bootstrapSupaBox').style.display='none';
-      Toast.show('Connected to Supabase! You can log in now.', 'success');
-      await Catalog.refreshAll();
-    }catch(e){
-      Utils.qs('#bootConnErr').textContent = 'Could not connect: '+(e.message||e);
-      Utils.qs('#bootConnErr').style.display='block';
-    }
-  });
   Utils.qs('#adminLoginCancel').addEventListener('click', closeLogin);
   Utils.qs('#adminLoginModal').addEventListener('click',(e)=>{ if(e.target.id==='adminLoginModal') closeLogin(); });
 
@@ -1358,7 +1306,7 @@ const Admin = (() => {
       if(u===stored.username && p===stored.password){ closeLogin(); openPanel(); }
       else { Utils.qs('#adminErr').style.display='block'; }
     } catch(e){
-      Toast.show('Could not reach Supabase — connect it first (see below), then log in.', 'error');
+      Toast.show('Could not reach Supabase — check your internet connection and try again.', 'error');
     }
   });
 
@@ -1369,9 +1317,9 @@ const Admin = (() => {
     try{
       await Catalog.refreshAll();
       populateAdminCatFilter();
-      await renderDashboard(); await renderProductRows(); await renderCategoryBlocks(); await loadSettingsForm(); refreshConnStatus();
+      await renderDashboard(); await renderProductRows(); await renderCategoryBlocks(); await loadSettingsForm();
     } catch(e){
-      Toast.show('Lost connection to Supabase — please reconnect in Settings.', 'error');
+      Toast.show('Lost connection to Supabase — please check your internet connection.', 'error');
     } finally {
       AdminLoading.hide();
     }
@@ -1778,13 +1726,6 @@ const Admin = (() => {
     Utils.qs('#set-maintenance-switch').classList.toggle('on', !!s.maintenance);
     Utils.qs('#set-adminuser').value = admin.username||'';
     Utils.qs('#set-adminpass').value = '';
-    const cfg = JSON.parse(localStorage.getItem('chireva_supabase_config')||'null');
-    if(cfg){ Utils.qs('#set-supa-url').value = cfg.url; Utils.qs('#set-supa-key').value = cfg.anonKey; }
-  }
-  function refreshConnStatus(){
-    const el = Utils.qs('#connStatus');
-    if(DataStore.isConnected()){ el.textContent='● Connected to Supabase'; el.className='conn-status on'; }
-    else { el.textContent='● Not connected to Supabase'; el.className='conn-status off'; }
   }
 
   Utils.qs('#settingsSave').addEventListener('click', async ()=>{
@@ -1806,26 +1747,6 @@ const Admin = (() => {
     finally { AdminLoading.hide(); }
   });
 
-  Utils.qs('#connectSupabaseBtn').addEventListener('click', async ()=>{
-    const url = Utils.qs('#set-supa-url').value.trim(); const key = Utils.qs('#set-supa-key').value.trim();
-    if(!url || !key){ Toast.show('Enter both the Supabase project URL and anon key.', 'error'); return; }
-    AdminLoading.show();
-    try{
-      await DataStore.connect(url, key);
-      Toast.show('Connected! Syncing data from Supabase…', 'success');
-      await Catalog.refreshAll(); await renderDashboard(); await renderProductRows(); await renderCategoryBlocks(); populateAdminCatFilter(); refreshConnStatus();
-    }catch(e){ Toast.show('Could not connect: '+(e.message||e), 'error'); }
-    finally { AdminLoading.hide(); }
-  });
-  Utils.qs('#disconnectSupabaseBtn').addEventListener('click', async ()=>{
-    AdminLoading.show();
-    try{
-      DataStore.disconnect(); refreshConnStatus();
-      await Catalog.refreshAll(); await renderDashboard(); await renderProductRows(); await renderCategoryBlocks(); populateAdminCatFilter();
-      Toast.show('Disconnected from Supabase. Reconnect to load live data again.', 'info');
-    } finally { AdminLoading.hide(); }
-  });
-
   return { openPanel };
 })();
 
@@ -1841,12 +1762,12 @@ async function applySettingsToSite(){
     Utils.qs('#footerWhatsapp').href = `https://wa.me/${s.whatsapp||''}`;
     Utils.qs('#footerEmail').href = `mailto:${s.email||''}`;
     Utils.qs('#footerEmail').textContent = s.email || 'Email';
-  } catch(e){ /* not connected yet — leave defaults, storefront still renders */ }
+  } catch(e){ /* Supabase unreachable — leave defaults, storefront still renders */ }
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
   Utils.qs('#year').textContent = new Date().getFullYear();
-  try{ await Analytics.trackVisit(); } catch(e){ /* Supabase not connected yet */ }
+  try{ await Analytics.trackVisit(); } catch(e){ /* Supabase unreachable */ }
   await Catalog.init();
   await applySettingsToSite();
 
