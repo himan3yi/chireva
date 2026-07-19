@@ -675,7 +675,7 @@ footer{background:#150F26;color:#fff;padding:70px 0 26px;}
         <hr style="border:none;border-top:1px solid var(--line);margin:8px 0;">
         <div class="field full" style="margin:0;">
           <label>Database — Supabase (optional)</label>
-          <span class="conn-status off" id="connStatus" style="margin-bottom:12px;display:inline-flex;">● Using local storage</span>
+          <span class="conn-status off" id="connStatus" style="margin-bottom:12px;display:inline-flex;">● Not connected to Supabase</span>
           <small>Leave blank to keep running fully offline on this browser. Connect a Supabase project to sync products, categories and settings to real Postgres tables — see the SQL schema comment at the top of the page's script for the exact tables to create.</small>
         </div>
         <div class="field"><label>Supabase Project URL</label><input type="text" id="set-supa-url" placeholder="https://xxxx.supabase.co"></div>
@@ -710,9 +710,10 @@ footer{background:#150F26;color:#fff;padding:70px 0 26px;}
 
 <script>
 /* =========================================================================
-  SUPABASE SCHEMA (optional) — run in the Supabase SQL editor to connect a
-  real database instead of the built-in local storage. Column names match
-  exactly what this file reads/writes. The old "tier" column is gone.
+  SUPABASE SCHEMA — run this in the Supabase SQL editor to create the tables
+  this file reads/writes. Column names match exactly. There is no local
+  database fallback in this file — until connected, the storefront and
+  Admin panel simply show empty/zero state.
 
   create table categories (
     id text primary key, label text not null, emoji text, sort_order int default 0
@@ -848,31 +849,49 @@ const DataStore = (() => {
       const {data,error}=await requireClient().from('products').select('*').order('created',{ascending:false});
       if(error) throw error; return data||[];
     },
-    async saveProducts(list){
-      const c=requireClient();
-      const {error:delErr}=await c.from('products').delete().neq('id','');
-      if(delErr) throw delErr;
-      if(list.length){ const {error}=await c.from('products').insert(list); if(error) throw error; }
+    // Upserts exactly ONE product row. Never touches any other row, so two
+    // admins/visitors changing different products at the same time can never
+    // stomp each other's changes, and a failed request can never wipe data.
+    async upsertProduct(product){
+      const {error}=await requireClient().from('products').upsert(product);
+      if(error) throw error;
+    },
+    async deleteProduct(id){
+      const {error}=await requireClient().from('products').delete().eq('id', id);
+      if(error) throw error;
     },
     async getCategories(){
       const {data,error}=await requireClient().from('categories').select('*').order('sort_order');
       if(error) throw error; return data||[];
     },
-    async saveCategories(list){
-      const c=requireClient();
-      const {error:delErr}=await c.from('categories').delete().neq('id','');
-      if(delErr) throw delErr;
-      if(list.length){ const {error}=await c.from('categories').insert(list); if(error) throw error; }
+    // Upserts exactly ONE category row.
+    async upsertCategory(cat){
+      const {error}=await requireClient().from('categories').upsert(cat);
+      if(error) throw error;
+    },
+    // Deletes exactly ONE category row (and, via the table's own FK, only
+    // ITS subcategories — not every category/subcategory in the database).
+    // We also explicitly clear its subcategories ourselves first so this
+    // works correctly even on databases created without an ON DELETE CASCADE.
+    async deleteCategory(id){
+      const c = requireClient();
+      const {error:subErr} = await c.from('subcategories').delete().eq('category_id', id);
+      if(subErr) throw subErr;
+      const {error} = await c.from('categories').delete().eq('id', id);
+      if(error) throw error;
     },
     async getSubcategories(){
       const {data,error}=await requireClient().from('subcategories').select('*').order('sort_order');
       if(error) throw error; return data||[];
     },
-    async saveSubcategories(list){
-      const c=requireClient();
-      const {error:delErr}=await c.from('subcategories').delete().neq('id','');
-      if(delErr) throw delErr;
-      if(list.length){ const {error}=await c.from('subcategories').insert(list); if(error) throw error; }
+    // Upserts exactly ONE subcategory row.
+    async upsertSubcategory(sub){
+      const {error}=await requireClient().from('subcategories').upsert(sub);
+      if(error) throw error;
+    },
+    async deleteSubcategory(id){
+      const {error}=await requireClient().from('subcategories').delete().eq('id', id);
+      if(error) throw error;
     },
     async getSettings(){
       const {data,error}=await requireClient().from('settings').select('*').eq('id','main').maybeSingle();
@@ -922,7 +941,7 @@ const Analytics = {
     await DataStore.saveAnalytics(a);
     const products = await DataStore.getProducts();
     const p = products.find(p=>p.id===productId);
-    if(p){ p.orders=(p.orders||0)+1; await DataStore.saveProducts(products); }
+    if(p){ p.orders=(p.orders||0)+1; await DataStore.upsertProduct(p); }
   }
 };
 
@@ -1074,7 +1093,7 @@ const Detail = (() => {
     const p = products.find(p=>p.id===id);
     if(!p) return;
     p.views = (p.views||0)+1;
-    await DataStore.saveProducts(products.map(x=>x.id===id?p:x));
+    await DataStore.upsertProduct(p);
 
     const sub = Catalog.subMeta(p.subcategory_id);
     const detailHeroStyle = p.thumbnailImage
@@ -1500,23 +1519,29 @@ const Admin = (() => {
       catch(e){ Toast.show('Could not copy — clipboard access denied.', 'error'); }
       return;
     }
-    if(act==='dup'){ const copy={...p, id:Utils.uid('p'), title:p.title+' (Copy)', created:Date.now()}; products.push(copy); }
-    if(act==='hide'){ p.visible = p.visible===false ? true : false; }
-    if(act==='pop'){ p.popular = !p.popular; }
-    if(act==='feat'){ p.featured = !p.featured; }
     if(act==='del'){
       // NEW: glass confirm dialog instead of native confirm()
       const ok = await ConfirmDialog.ask('Delete "'+p.title+'"? This cannot be undone.', 'Delete product?');
       if(!ok) return;
-      products.splice(idx,1);
+      AdminLoading.show();
+      try{
+        await DataStore.deleteProduct(id);
+        await renderProductRows(); await renderCategoryBlocks(); await renderDashboard();
+        Toast.show('Product deleted.', 'success');
+      } catch(e){ Toast.show('Something went wrong — please try again.', 'error'); }
+      finally { AdminLoading.hide(); }
+      return;
     }
+    let rowToSave = p;
+    if(act==='dup'){ rowToSave = {...p, id:Utils.uid('p'), title:p.title+' (Copy)', created:Date.now()}; }
+    if(act==='hide'){ p.visible = p.visible===false ? true : false; }
+    if(act==='pop'){ p.popular = !p.popular; }
+    if(act==='feat'){ p.featured = !p.featured; }
     AdminLoading.show();
     try{
-      await DataStore.saveProducts(products);
+      await DataStore.upsertProduct(rowToSave);
       await renderProductRows(); await renderCategoryBlocks(); await renderDashboard();
-      if(act==='del') Toast.show('Product deleted.', 'success');
-      else if(act==='dup') Toast.show('Product duplicated.', 'success');
-      else Toast.show('Product updated.', 'success');
+      Toast.show(act==='dup' ? 'Product duplicated.' : 'Product updated.', 'success');
     } catch(e){ Toast.show('Something went wrong — please try again.', 'error'); }
     finally { AdminLoading.hide(); }
   }
@@ -1615,7 +1640,6 @@ const Admin = (() => {
     const thumbnailImage = pendingThumbData || thumbUrlField || '';
     AdminLoading.show();
     try{
-      let products = await DataStore.getProducts();
       const data = {
         title, price, category_id, subcategory_id: Utils.qs('#pf-subcategory').value || null,
         description:Utils.qs('#pf-desc').value.trim(), tags:Utils.qs('#pf-tags').value.split(',').map(t=>t.trim()).filter(Boolean),
@@ -1625,9 +1649,14 @@ const Admin = (() => {
         popular:Utils.qs('#pf-popular-switch').classList.contains('on'),
         visible:Utils.qs('#pf-visible-switch').classList.contains('on')
       };
-      if(editingId){ products = products.map(p=>p.id===editingId ? {...p, ...data} : p); }
-      else { products.push({ id:Utils.uid('p'), views:0, orders:0, created:Date.now(), ...data }); }
-      await DataStore.saveProducts(products);
+      let row;
+      if(editingId){
+        const existing = (await DataStore.getProducts()).find(p=>p.id===editingId) || {};
+        row = {...existing, ...data, id:editingId};
+      } else {
+        row = { id:Utils.uid('p'), views:0, orders:0, created:Date.now(), ...data };
+      }
+      await DataStore.upsertProduct(row);
       Utils.qs('#productForm').classList.add('hidden'); clearForm();
       await renderProductRows(); await renderCategoryBlocks(); await renderDashboard();
       Toast.show('Product saved successfully.', 'success');
@@ -1688,8 +1717,7 @@ const Admin = (() => {
     const cats = Catalog.getCategories();
     const id = Utils.slug(label) || Utils.uid('cat');
     if(cats.some(c=>c.id===id)){ Toast.show('A category with a similar name already exists.', 'error'); return; }
-    cats.push({ id, label, emoji, sort_order: cats.length });
-    await DataStore.saveCategories(cats);
+    await DataStore.upsertCategory({ id, label, emoji, sort_order: cats.length });
     Utils.qs('#newCatLabel').value=''; Utils.qs('#newCatEmoji').value='';
     await Catalog.refreshAll(); await renderCategoryBlocks(); populateProductFormSelects(); populateAdminCatFilter(); await renderDashboard();
     Toast.show('Category added.', 'success');
@@ -1700,8 +1728,7 @@ const Admin = (() => {
     const c = cats.find(c=>c.id===catId); if(!c) return;
     const newLabel = prompt('Rename category', c.label);
     if(!newLabel || !newLabel.trim()) return;
-    c.label = newLabel.trim();
-    await DataStore.saveCategories(cats);
+    await DataStore.upsertCategory({ ...c, label:newLabel.trim() });
     await Catalog.refreshAll(); await renderCategoryBlocks(); populateProductFormSelects();
   }
   async function deleteCategory(catId){
@@ -1710,9 +1737,9 @@ const Admin = (() => {
     const msg = inUse ? `${inUse} product(s) use this category and will become "Uncategorised". Delete anyway?` : 'Delete this category and all its subcategories?';
     const ok = await ConfirmDialog.ask(msg, 'Delete category?');
     if(!ok) return;
-    let cats = Catalog.getCategories().filter(c=>c.id!==catId);
-    let subs = Catalog.getSubcategories().filter(s=>s.category_id!==catId);
-    await DataStore.saveCategories(cats); await DataStore.saveSubcategories(subs);
+    // Deletes only this one category (and its own subcategories) — every
+    // other category/subcategory/product in the database is untouched.
+    await DataStore.deleteCategory(catId);
     await Catalog.refreshAll(); await renderCategoryBlocks(); populateProductFormSelects(); populateAdminCatFilter(); await renderProductRows(); await renderDashboard();
     Toast.show('Category deleted.', 'success');
   }
@@ -1721,8 +1748,7 @@ const Admin = (() => {
     const subs = Catalog.getSubcategories();
     const id = catId+'-'+Utils.slug(label);
     if(subs.some(s=>s.id===id)){ Toast.show('A subcategory with a similar name already exists in this category.', 'error'); return; }
-    subs.push({ id, category_id:catId, label, sort_order: Catalog.subcatsFor(catId).length });
-    await DataStore.saveSubcategories(subs);
+    await DataStore.upsertSubcategory({ id, category_id:catId, label, sort_order: Catalog.subcatsFor(catId).length });
     await Catalog.refreshAll(); await renderCategoryBlocks();
     if(Utils.qs('#pf-category').value===catId) populateSubcatSelect(catId);
     Toast.show('Subcategory added.', 'success');
@@ -1732,15 +1758,13 @@ const Admin = (() => {
     const s = subs.find(s=>s.id===subId); if(!s) return;
     const newLabel = prompt('Rename subcategory', s.label);
     if(!newLabel || !newLabel.trim()) return;
-    s.label = newLabel.trim();
-    await DataStore.saveSubcategories(subs);
+    await DataStore.upsertSubcategory({ ...s, label:newLabel.trim() });
     await Catalog.refreshAll(); await renderCategoryBlocks();
   }
   async function deleteSubcategory(subId){
     const ok = await ConfirmDialog.ask('Delete this subcategory? Products using it will keep no subcategory.', 'Delete subcategory?');
     if(!ok) return;
-    const subs = Catalog.getSubcategories().filter(s=>s.id!==subId);
-    await DataStore.saveSubcategories(subs);
+    await DataStore.deleteSubcategory(subId);
     await Catalog.refreshAll(); await renderCategoryBlocks();
     Toast.show('Subcategory deleted.', 'success');
   }
@@ -1760,7 +1784,7 @@ const Admin = (() => {
   function refreshConnStatus(){
     const el = Utils.qs('#connStatus');
     if(DataStore.isConnected()){ el.textContent='● Connected to Supabase'; el.className='conn-status on'; }
-    else { el.textContent='● Using local storage'; el.className='conn-status off'; }
+    else { el.textContent='● Not connected to Supabase'; el.className='conn-status off'; }
   }
 
   Utils.qs('#settingsSave').addEventListener('click', async ()=>{
@@ -1798,7 +1822,7 @@ const Admin = (() => {
     try{
       DataStore.disconnect(); refreshConnStatus();
       await Catalog.refreshAll(); await renderDashboard(); await renderProductRows(); await renderCategoryBlocks(); populateAdminCatFilter();
-      Toast.show('Disconnected — back to local storage.', 'info');
+      Toast.show('Disconnected from Supabase. Reconnect to load live data again.', 'info');
     } finally { AdminLoading.hide(); }
   });
 
