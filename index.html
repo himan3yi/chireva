@@ -589,7 +589,7 @@ footer{background:#150F26;color:#fff;padding:70px 0 26px;}
     <div class="admin-section active" id="tab-dash">
       <div class="admin-section-title">Overview</div>
       <div class="stat-grid" id="statGrid"></div>
-      <p style="font-size:12.5px;color:var(--muted);">Stats are tracked live in Supabase.</p>
+      <p style="font-size:12.5px;color:var(--muted);">Stats are tracked in this browser (or in Supabase, if connected in Settings → Database).</p>
     </div>
 
     <div class="admin-section" id="tab-prod">
@@ -667,9 +667,15 @@ footer{background:#150F26;color:#fff;padding:70px 0 26px;}
 
         <hr style="border:none;border-top:1px solid var(--line);margin:8px 0;">
         <div class="field full" style="margin:0;">
-          <label>Database — Supabase</label>
-          <span class="conn-status on" id="connStatus" style="margin-bottom:12px;display:inline-flex;">● Connected to Supabase</span>
-          <small>This site is permanently connected to the production Supabase project. Every device reads and writes the same live data automatically — nothing to configure here.</small>
+          <label>Database — Supabase (optional)</label>
+          <span class="conn-status off" id="connStatus" style="margin-bottom:12px;display:inline-flex;">● Using local storage</span>
+          <small>Leave blank to keep running fully offline on this browser. Connect a Supabase project to sync products, categories and settings to real Postgres tables — see the SQL schema comment at the top of the page's script for the exact tables to create.</small>
+        </div>
+        <div class="field"><label>Supabase Project URL</label><input type="text" id="set-supa-url" placeholder="https://xxxx.supabase.co"></div>
+        <div class="field"><label>Supabase Anon Public Key</label><input type="text" id="set-supa-key" placeholder="eyJhbGciOi..."></div>
+        <div class="field full" style="display:flex;gap:10px;margin:0;">
+          <button class="btn btn-primary btn-sm" id="connectSupabaseBtn" type="button">Connect &amp; Sync</button>
+          <button class="btn btn-ghost btn-sm" id="disconnectSupabaseBtn" type="button">Disconnect</button>
         </div>
       </div>
     </div>
@@ -697,10 +703,9 @@ footer{background:#150F26;color:#fff;padding:70px 0 26px;}
 
 <script>
 /* =========================================================================
-  SUPABASE SCHEMA — run this in the Supabase SQL editor to create the tables
-  this file reads/writes. Column names match exactly. There is no local
-  database fallback in this file — until connected, the storefront and
-  Admin panel simply show empty/zero state.
+  SUPABASE SCHEMA (optional) — run in the Supabase SQL editor to connect a
+  real database instead of the built-in local storage. Column names match
+  exactly what this file reads/writes. The old "tier" column is gone.
 
   create table categories (
     id text primary key, label text not null, emoji text, sort_order int default 0
@@ -764,122 +769,115 @@ const Utils = {
 };
 
 /* =========================================================================
-   MODULE: DataStore — Supabase is the ONLY database. No localStorage, no
-   seed/demo data, no local fallback of any kind. Every get/save talks
-   directly to Supabase, so every browser/device always sees the same data.
-
-   The only thing localStorage is used for here is remembering the
-   Supabase URL/anon key that the admin pastes into Admin → Settings (or
-   the login-screen bootstrap box) on THIS browser — purely a per-browser
-   convenience override. It is never used to store products/site data.
-
-   IMPORTANT — for regular VISITORS (not just the admin) to see the same
-   live data on every browser/device, the two constants below must be
-   filled in with your real Supabase Project URL + anon key. A static
-   HTML file has no server, so this is the only way anonymous visitors'
-   browsers can know which Supabase project to talk to — they can't be
-   asked to "connect" anything themselves. The anon key is designed by
-   Supabase to be safe to ship in client-side code; your Row Level
-   Security policies (not secrecy) are what protect the data.
-   Get both values from: Supabase Dashboard → Project Settings → API.
+   MODULE: DataStore — async, Supabase-compatible, localStorage fallback.
    ========================================================================= */
 const DataStore = (() => {
-  const SUPABASE_CONFIG = {
-    url: 'https://auhqnoqrfotnbvklsddq.supabase.co',
-    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF1aHFub3FyZm90bmJ2a2xzZGRxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQyMTUzMjksImV4cCI6MjA5OTc5MTMyOX0.YkQNVtsqk5ikjgpDhHiywLybBRDZcgaDq_f46-Ovpd8'
-  };
+  const KEYS = { products:'chireva_products', categories:'chireva_categories', subcategories:'chireva_subcategories',
+    settings:'chireva_settings', analytics:'chireva_analytics', admin:'chireva_admin', supaCfg:'chireva_supabase_config' };
+
+  const defaultSettings = { whatsapp:'919999999999', instagram:'https://instagram.com/chireva', email:'hello@chireva.in',
+    announce:"✨ New gifts just dropped — browse the collection below", maintenance:false };
+  const defaultAdmin = { username:'admin', password:'chireva@2026' };
+
+  const defaultCategories = [
+    {id:'birthday',label:'Birthday',emoji:'🎂',sort_order:0}, {id:'marriage',label:'Marriage',emoji:'💍',sort_order:1},
+    {id:'anniversary',label:'Anniversary',emoji:'🥂',sort_order:2}, {id:'others',label:'Others',emoji:'🎁',sort_order:3}
+  ];
+  const defaultSubcategories = [];
+  defaultCategories.forEach(c=>{
+    ['General','Semi Customisable','Fully Customisable'].forEach((label,i)=>{
+      defaultSubcategories.push({id:c.id+'-'+Utils.slug(label), category_id:c.id, label, sort_order:i});
+    });
+  });
+
+  const defaultProducts = [
+    {id:'p1',title:'Midnight Wishes Envelope',category_id:'birthday',subcategory_id:'birthday-general',price:749,description:'A wax-sealed envelope that opens into a glowing birthday surprise.',tags:['birthday','envelope','surprise'],delivery:'Instant',emoji:'💌',featured:true,popular:true,visible:true,views:0,orders:0,created:Date.now()-86400000*2},
+    {id:'p2',title:'Golden Heart Locket',category_id:'birthday',subcategory_id:'birthday-semi-customisable',price:999,description:'An animated locket that opens to reveal a name and a wish.',tags:['birthday','locket','love'],delivery:'Within 6 hours',emoji:'💛',featured:false,popular:true,visible:true,views:0,orders:0,created:Date.now()-86400000*5},
+    {id:'p3',title:'Forever Bouquet',category_id:'anniversary',subcategory_id:'anniversary-fully-customisable',price:1499,description:'A blooming rose bouquet with a hidden love letter.',tags:['anniversary','flowers'],delivery:'Within 12 hours',emoji:'🌹',featured:true,popular:true,visible:true,views:0,orders:0,created:Date.now()-86400000},
+    {id:'p4',title:'Confetti Cake Reveal',category_id:'birthday',subcategory_id:'birthday-fully-customisable',price:1299,description:'A 3D candle-lit cake with a confetti burst and a personal message.',tags:['birthday','cake','confetti'],delivery:'Within 12 hours',emoji:'🎂',featured:true,popular:false,visible:true,views:0,orders:0,created:Date.now()-86400000*7},
+    {id:'p5',title:'Wedding Bells Invitation',category_id:'marriage',subcategory_id:'marriage-semi-customisable',price:1199,description:'An elegant animated invite with names, date, and a shared story.',tags:['marriage','wedding','invite'],delivery:'Within 24 hours',emoji:'💍',featured:false,popular:false,visible:true,views:0,orders:0,created:Date.now()-86400000*4},
+    {id:'p6',title:'Vows in Light',category_id:'marriage',subcategory_id:'marriage-fully-customisable',price:1799,description:'A cinematic vow-reveal experience with photos woven throughout.',tags:['marriage','vows','photos'],delivery:'Within 24 hours',emoji:'💫',featured:true,popular:false,visible:true,views:0,orders:0,created:Date.now()-86400000*3},
+    {id:'p7',title:'Just Because Card',category_id:'others',subcategory_id:'others-general',price:499,description:'A sweet no-occasion-needed digital card for a Buddy or Soulmate.',tags:['others','friendship','card'],delivery:'Instant',emoji:'🎈',featured:false,popular:false,visible:true,views:0,orders:0,created:Date.now()-86400000*10},
+    {id:'p8',title:'Anniversary Timeline',category_id:'anniversary',subcategory_id:'anniversary-semi-customisable',price:1099,description:'A scrollable timeline of your years together, told beautifully.',tags:['anniversary','timeline','memories'],delivery:'Within 12 hours',emoji:'🥂',featured:false,popular:true,visible:true,views:0,orders:0,created:Date.now()-86400000*6}
+  ];
+
+  function ensureSeed(){
+    if(!localStorage.getItem(KEYS.products)) localStorage.setItem(KEYS.products, JSON.stringify(defaultProducts));
+    if(!localStorage.getItem(KEYS.categories)) localStorage.setItem(KEYS.categories, JSON.stringify(defaultCategories));
+    if(!localStorage.getItem(KEYS.subcategories)) localStorage.setItem(KEYS.subcategories, JSON.stringify(defaultSubcategories));
+    if(!localStorage.getItem(KEYS.settings)) localStorage.setItem(KEYS.settings, JSON.stringify(defaultSettings));
+    if(!localStorage.getItem(KEYS.admin)) localStorage.setItem(KEYS.admin, JSON.stringify(defaultAdmin));
+    if(!localStorage.getItem(KEYS.analytics)) localStorage.setItem(KEYS.analytics, JSON.stringify({
+      totalVisits:0, todayVisits:0, todayKey:new Date().toDateString(), uniqueVisitors:0, previewClicks:0, orderClicks:0, productViews:{}
+    }));
+  }
+  ensureSeed();
 
   let client = null;
-
+  function getConfig(){ try{ return JSON.parse(localStorage.getItem(KEYS.supaCfg)||'null'); }catch(e){ return null; } }
+  function isConnected(){ return !!getConfig(); }
   function getClient(){
-    if(!window.supabase) return null;
-    if(!client){
-      client = window.supabase.createClient(SUPABASE_CONFIG.url, SUPABASE_CONFIG.anonKey);
-    }
+    const cfg = getConfig();
+    if(!cfg || !cfg.url || !cfg.anonKey) return null;
+    if(!window.supabase){ return null; }
+    if(!client) client = window.supabase.createClient(cfg.url, cfg.anonKey);
     return client;
   }
-  function isConnected(){ return !!getClient(); }
-
-  function requireClient(){
+  async function connect(url, anonKey){
+    localStorage.setItem(KEYS.supaCfg, JSON.stringify({url, anonKey}));
+    client = null;
     const c = getClient();
-    if(!c) throw new Error('Supabase library not loaded yet — try again in a moment.');
-    return c;
+    if(!c) throw new Error('Supabase library not ready yet — try again in a moment.');
+    const { error } = await c.from('settings').select('id').limit(1);
+    if(error) { localStorage.removeItem(KEYS.supaCfg); client = null; throw error; }
+    return true;
   }
+  function disconnect(){ localStorage.removeItem(KEYS.supaCfg); client = null; }
+
+  const local = {
+    getProducts:async()=>JSON.parse(localStorage.getItem(KEYS.products)||'[]'),
+    saveProducts:async(list)=>localStorage.setItem(KEYS.products, JSON.stringify(list)),
+    getCategories:async()=>JSON.parse(localStorage.getItem(KEYS.categories)||'[]'),
+    saveCategories:async(list)=>localStorage.setItem(KEYS.categories, JSON.stringify(list)),
+    getSubcategories:async()=>JSON.parse(localStorage.getItem(KEYS.subcategories)||'[]'),
+    saveSubcategories:async(list)=>localStorage.setItem(KEYS.subcategories, JSON.stringify(list)),
+    getSettings:async()=>JSON.parse(localStorage.getItem(KEYS.settings)||'{}'),
+    saveSettings:async(s)=>localStorage.setItem(KEYS.settings, JSON.stringify(s)),
+    getAdmin:async()=>JSON.parse(localStorage.getItem(KEYS.admin)||'{}'),
+    saveAdmin:async(a)=>localStorage.setItem(KEYS.admin, JSON.stringify(a)),
+    getAnalytics:async()=>JSON.parse(localStorage.getItem(KEYS.analytics)||'{}'),
+    saveAnalytics:async(a)=>localStorage.setItem(KEYS.analytics, JSON.stringify(a))
+  };
+  const remote = {
+    async getProducts(){ const {data,error}=await getClient().from('products').select('*').order('created',{ascending:false}); if(error) throw error; return data; },
+    async saveProducts(list){ const c=getClient(); await c.from('products').delete().neq('id',''); if(list.length) await c.from('products').insert(list); },
+    async getCategories(){ const {data,error}=await getClient().from('categories').select('*').order('sort_order'); if(error) throw error; return data; },
+    async saveCategories(list){ const c=getClient(); await c.from('categories').delete().neq('id',''); if(list.length) await c.from('categories').insert(list); },
+    async getSubcategories(){ const {data,error}=await getClient().from('subcategories').select('*').order('sort_order'); if(error) throw error; return data; },
+    async saveSubcategories(list){ const c=getClient(); await c.from('subcategories').delete().neq('id',''); if(list.length) await c.from('subcategories').insert(list); },
+    async getSettings(){ const {data,error}=await getClient().from('settings').select('*').eq('id','main').maybeSingle(); if(error) throw error; return data||{}; },
+    async saveSettings(s){ await getClient().from('settings').upsert({id:'main', ...s}); },
+    async getAdmin(){ const {data,error}=await getClient().from('admin_users').select('*').eq('id','main').maybeSingle(); if(error) throw error; return data||{}; },
+    async saveAdmin(a){ await getClient().from('admin_users').upsert({id:'main', ...a}); },
+    async getAnalytics(){ const {data,error}=await getClient().from('analytics').select('*').eq('id','main').maybeSingle(); if(error) throw error; return data||{}; },
+    async saveAnalytics(a){ await getClient().from('analytics').upsert({id:'main', ...a}); }
+  };
+  function backend(){ return (isConnected() && getClient()) ? remote : local; }
 
   return {
-    isConnected,
-    async getProducts(){
-      const {data,error}=await requireClient().from('products').select('*').order('created',{ascending:false});
-      if(error) throw error; return data||[];
-    },
-    // Upserts exactly ONE product row. Never touches any other row, so two
-    // admins/visitors changing different products at the same time can never
-    // stomp each other's changes, and a failed request can never wipe data.
-    async upsertProduct(product){
-      const {error}=await requireClient().from('products').upsert(product);
-      if(error) throw error;
-    },
-    async deleteProduct(id){
-      const {error}=await requireClient().from('products').delete().eq('id', id);
-      if(error) throw error;
-    },
-    async getCategories(){
-      const {data,error}=await requireClient().from('categories').select('*').order('sort_order');
-      if(error) throw error; return data||[];
-    },
-    // Upserts exactly ONE category row.
-    async upsertCategory(cat){
-      const {error}=await requireClient().from('categories').upsert(cat);
-      if(error) throw error;
-    },
-    // Deletes exactly ONE category row (and, via the table's own FK, only
-    // ITS subcategories — not every category/subcategory in the database).
-    // We also explicitly clear its subcategories ourselves first so this
-    // works correctly even on databases created without an ON DELETE CASCADE.
-    async deleteCategory(id){
-      const c = requireClient();
-      const {error:subErr} = await c.from('subcategories').delete().eq('category_id', id);
-      if(subErr) throw subErr;
-      const {error} = await c.from('categories').delete().eq('id', id);
-      if(error) throw error;
-    },
-    async getSubcategories(){
-      const {data,error}=await requireClient().from('subcategories').select('*').order('sort_order');
-      if(error) throw error; return data||[];
-    },
-    // Upserts exactly ONE subcategory row.
-    async upsertSubcategory(sub){
-      const {error}=await requireClient().from('subcategories').upsert(sub);
-      if(error) throw error;
-    },
-    async deleteSubcategory(id){
-      const {error}=await requireClient().from('subcategories').delete().eq('id', id);
-      if(error) throw error;
-    },
-    async getSettings(){
-      const {data,error}=await requireClient().from('settings').select('*').eq('id','main').maybeSingle();
-      if(error) throw error; return data||{};
-    },
-    async saveSettings(s){
-      const {error}=await requireClient().from('settings').upsert({id:'main', ...s});
-      if(error) throw error;
-    },
-    async getAdmin(){
-      const {data,error}=await requireClient().from('admin_users').select('*').eq('id','main').maybeSingle();
-      if(error) throw error; return data||{};
-    },
-    async saveAdmin(a){
-      const {error}=await requireClient().from('admin_users').upsert({id:'main', ...a});
-      if(error) throw error;
-    },
-    async getAnalytics(){
-      const {data,error}=await requireClient().from('analytics').select('*').eq('id','main').maybeSingle();
-      if(error) throw error; return data||{};
-    },
-    async saveAnalytics(a){
-      const {error}=await requireClient().from('analytics').upsert({id:'main', ...a});
-      if(error) throw error;
-    }
+    isConnected, connect, disconnect,
+    getProducts: async()=>{ try{ return await backend().getProducts(); }catch(e){ console.warn('Falling back to local products:',e); return local.getProducts(); } },
+    saveProducts: async(list)=>{ try{ await backend().saveProducts(list); }catch(e){ console.warn('Supabase save failed, saving locally:',e); } await local.saveProducts(list); },
+    getCategories: async()=>{ try{ return await backend().getCategories(); }catch(e){ return local.getCategories(); } },
+    saveCategories: async(list)=>{ try{ await backend().saveCategories(list); }catch(e){} await local.saveCategories(list); },
+    getSubcategories: async()=>{ try{ return await backend().getSubcategories(); }catch(e){ return local.getSubcategories(); } },
+    saveSubcategories: async(list)=>{ try{ await backend().saveSubcategories(list); }catch(e){} await local.saveSubcategories(list); },
+    getSettings: async()=>{ try{ const r=await backend().getSettings(); return (r&&r.whatsapp)?r:local.getSettings(); }catch(e){ return local.getSettings(); } },
+    saveSettings: async(s)=>{ try{ await backend().saveSettings(s); }catch(e){} await local.saveSettings(s); },
+    getAdmin: async()=>{ try{ const r=await backend().getAdmin(); return (r&&r.username)?r:local.getAdmin(); }catch(e){ return local.getAdmin(); } },
+    saveAdmin: async(a)=>{ try{ await backend().saveAdmin(a); }catch(e){} await local.saveAdmin(a); },
+    getAnalytics: async()=>{ try{ const r=await backend().getAnalytics(); return (r&&Object.keys(r).length)?r:local.getAnalytics(); }catch(e){ return local.getAnalytics(); } },
+    saveAnalytics: async(a)=>{ try{ await backend().saveAnalytics(a); }catch(e){} await local.saveAnalytics(a); }
   };
 })();
 
@@ -904,7 +902,7 @@ const Analytics = {
     await DataStore.saveAnalytics(a);
     const products = await DataStore.getProducts();
     const p = products.find(p=>p.id===productId);
-    if(p){ p.orders=(p.orders||0)+1; await DataStore.upsertProduct(p); }
+    if(p){ p.orders=(p.orders||0)+1; await DataStore.saveProducts(products); }
   }
 };
 
@@ -919,20 +917,8 @@ const Catalog = (() => {
   function subMeta(id){ return subcategories.find(s=>s.id===id); }
   function subcatsFor(catId){ return subcategories.filter(s=>s.category_id===catId); }
 
-  let warnedNotConnected = false;
-  function warnNotConnected(e){
-    if(warnedNotConnected) return; warnedNotConnected = true;
-    console.warn('DataStore error:', e);
-    if(window.Toast) Toast.show('Could not reach the database — check your internet connection and refresh.', 'error');
-  }
-  async function reloadTaxonomy(){
-    try{ categories = await DataStore.getCategories(); subcategories = await DataStore.getSubcategories(); }
-    catch(e){ categories = []; subcategories = []; warnNotConnected(e); }
-  }
-  async function visibleProducts(){
-    try{ return (await DataStore.getProducts()).filter(p=>p.visible!==false); }
-    catch(e){ warnNotConnected(e); return []; }
-  }
+  async function reloadTaxonomy(){ categories = await DataStore.getCategories(); subcategories = await DataStore.getSubcategories(); }
+  async function visibleProducts(){ return (await DataStore.getProducts()).filter(p=>p.visible!==false); }
 
   async function renderOccasions(){
     const products = await visibleProducts();
@@ -1056,7 +1042,7 @@ const Detail = (() => {
     const p = products.find(p=>p.id===id);
     if(!p) return;
     p.views = (p.views||0)+1;
-    await DataStore.upsertProduct(p);
+    await DataStore.saveProducts(products.map(x=>x.id===id?p:x));
 
     const sub = Catalog.subMeta(p.subcategory_id);
     const detailHeroStyle = p.thumbnailImage
@@ -1290,9 +1276,7 @@ const Admin = (() => {
     }catch(e){ return false; }
   }
 
-  function openLogin(){
-    Utils.qs('#adminLoginModal').classList.add('show');
-  }
+  function openLogin(){ Utils.qs('#adminLoginModal').classList.add('show'); }
   function closeLogin(){ Utils.qs('#adminLoginModal').classList.remove('show'); Utils.qs('#adminErr').style.display='none'; }
   Utils.qs('#adminEntry').addEventListener('click', openLogin);
   Utils.qs('#adminLoginCancel').addEventListener('click', closeLogin);
@@ -1301,13 +1285,9 @@ const Admin = (() => {
   Utils.qs('#adminLoginBtn').addEventListener('click', async ()=>{
     const u = Utils.qs('#adminUser').value.trim();
     const p = Utils.qs('#adminPass').value;
-    try{
-      const stored = await DataStore.getAdmin();
-      if(u===stored.username && p===stored.password){ closeLogin(); openPanel(); }
-      else { Utils.qs('#adminErr').style.display='block'; }
-    } catch(e){
-      Toast.show('Could not reach Supabase — check your internet connection and try again.', 'error');
-    }
+    const stored = await DataStore.getAdmin();
+    if(u===stored.username && p===stored.password){ closeLogin(); openPanel(); }
+    else { Utils.qs('#adminErr').style.display='block'; }
   });
 
   async function openPanel(){
@@ -1317,9 +1297,7 @@ const Admin = (() => {
     try{
       await Catalog.refreshAll();
       populateAdminCatFilter();
-      await renderDashboard(); await renderProductRows(); await renderCategoryBlocks(); await loadSettingsForm();
-    } catch(e){
-      Toast.show('Lost connection to Supabase — please check your internet connection.', 'error');
+      await renderDashboard(); await renderProductRows(); await renderCategoryBlocks(); await loadSettingsForm(); refreshConnStatus();
     } finally {
       AdminLoading.hide();
     }
@@ -1467,29 +1445,23 @@ const Admin = (() => {
       catch(e){ Toast.show('Could not copy — clipboard access denied.', 'error'); }
       return;
     }
+    if(act==='dup'){ const copy={...p, id:Utils.uid('p'), title:p.title+' (Copy)', created:Date.now()}; products.push(copy); }
+    if(act==='hide'){ p.visible = p.visible===false ? true : false; }
+    if(act==='pop'){ p.popular = !p.popular; }
+    if(act==='feat'){ p.featured = !p.featured; }
     if(act==='del'){
       // NEW: glass confirm dialog instead of native confirm()
       const ok = await ConfirmDialog.ask('Delete "'+p.title+'"? This cannot be undone.', 'Delete product?');
       if(!ok) return;
-      AdminLoading.show();
-      try{
-        await DataStore.deleteProduct(id);
-        await renderProductRows(); await renderCategoryBlocks(); await renderDashboard();
-        Toast.show('Product deleted.', 'success');
-      } catch(e){ Toast.show('Something went wrong — please try again.', 'error'); }
-      finally { AdminLoading.hide(); }
-      return;
+      products.splice(idx,1);
     }
-    let rowToSave = p;
-    if(act==='dup'){ rowToSave = {...p, id:Utils.uid('p'), title:p.title+' (Copy)', created:Date.now()}; }
-    if(act==='hide'){ p.visible = p.visible===false ? true : false; }
-    if(act==='pop'){ p.popular = !p.popular; }
-    if(act==='feat'){ p.featured = !p.featured; }
     AdminLoading.show();
     try{
-      await DataStore.upsertProduct(rowToSave);
+      await DataStore.saveProducts(products);
       await renderProductRows(); await renderCategoryBlocks(); await renderDashboard();
-      Toast.show(act==='dup' ? 'Product duplicated.' : 'Product updated.', 'success');
+      if(act==='del') Toast.show('Product deleted.', 'success');
+      else if(act==='dup') Toast.show('Product duplicated.', 'success');
+      else Toast.show('Product updated.', 'success');
     } catch(e){ Toast.show('Something went wrong — please try again.', 'error'); }
     finally { AdminLoading.hide(); }
   }
@@ -1588,6 +1560,7 @@ const Admin = (() => {
     const thumbnailImage = pendingThumbData || thumbUrlField || '';
     AdminLoading.show();
     try{
+      let products = await DataStore.getProducts();
       const data = {
         title, price, category_id, subcategory_id: Utils.qs('#pf-subcategory').value || null,
         description:Utils.qs('#pf-desc').value.trim(), tags:Utils.qs('#pf-tags').value.split(',').map(t=>t.trim()).filter(Boolean),
@@ -1597,14 +1570,9 @@ const Admin = (() => {
         popular:Utils.qs('#pf-popular-switch').classList.contains('on'),
         visible:Utils.qs('#pf-visible-switch').classList.contains('on')
       };
-      let row;
-      if(editingId){
-        const existing = (await DataStore.getProducts()).find(p=>p.id===editingId) || {};
-        row = {...existing, ...data, id:editingId};
-      } else {
-        row = { id:Utils.uid('p'), views:0, orders:0, created:Date.now(), ...data };
-      }
-      await DataStore.upsertProduct(row);
+      if(editingId){ products = products.map(p=>p.id===editingId ? {...p, ...data} : p); }
+      else { products.push({ id:Utils.uid('p'), views:0, orders:0, created:Date.now(), ...data }); }
+      await DataStore.saveProducts(products);
       Utils.qs('#productForm').classList.add('hidden'); clearForm();
       await renderProductRows(); await renderCategoryBlocks(); await renderDashboard();
       Toast.show('Product saved successfully.', 'success');
@@ -1665,7 +1633,8 @@ const Admin = (() => {
     const cats = Catalog.getCategories();
     const id = Utils.slug(label) || Utils.uid('cat');
     if(cats.some(c=>c.id===id)){ Toast.show('A category with a similar name already exists.', 'error'); return; }
-    await DataStore.upsertCategory({ id, label, emoji, sort_order: cats.length });
+    cats.push({ id, label, emoji, sort_order: cats.length });
+    await DataStore.saveCategories(cats);
     Utils.qs('#newCatLabel').value=''; Utils.qs('#newCatEmoji').value='';
     await Catalog.refreshAll(); await renderCategoryBlocks(); populateProductFormSelects(); populateAdminCatFilter(); await renderDashboard();
     Toast.show('Category added.', 'success');
@@ -1676,7 +1645,8 @@ const Admin = (() => {
     const c = cats.find(c=>c.id===catId); if(!c) return;
     const newLabel = prompt('Rename category', c.label);
     if(!newLabel || !newLabel.trim()) return;
-    await DataStore.upsertCategory({ ...c, label:newLabel.trim() });
+    c.label = newLabel.trim();
+    await DataStore.saveCategories(cats);
     await Catalog.refreshAll(); await renderCategoryBlocks(); populateProductFormSelects();
   }
   async function deleteCategory(catId){
@@ -1685,9 +1655,9 @@ const Admin = (() => {
     const msg = inUse ? `${inUse} product(s) use this category and will become "Uncategorised". Delete anyway?` : 'Delete this category and all its subcategories?';
     const ok = await ConfirmDialog.ask(msg, 'Delete category?');
     if(!ok) return;
-    // Deletes only this one category (and its own subcategories) — every
-    // other category/subcategory/product in the database is untouched.
-    await DataStore.deleteCategory(catId);
+    let cats = Catalog.getCategories().filter(c=>c.id!==catId);
+    let subs = Catalog.getSubcategories().filter(s=>s.category_id!==catId);
+    await DataStore.saveCategories(cats); await DataStore.saveSubcategories(subs);
     await Catalog.refreshAll(); await renderCategoryBlocks(); populateProductFormSelects(); populateAdminCatFilter(); await renderProductRows(); await renderDashboard();
     Toast.show('Category deleted.', 'success');
   }
@@ -1696,7 +1666,8 @@ const Admin = (() => {
     const subs = Catalog.getSubcategories();
     const id = catId+'-'+Utils.slug(label);
     if(subs.some(s=>s.id===id)){ Toast.show('A subcategory with a similar name already exists in this category.', 'error'); return; }
-    await DataStore.upsertSubcategory({ id, category_id:catId, label, sort_order: Catalog.subcatsFor(catId).length });
+    subs.push({ id, category_id:catId, label, sort_order: Catalog.subcatsFor(catId).length });
+    await DataStore.saveSubcategories(subs);
     await Catalog.refreshAll(); await renderCategoryBlocks();
     if(Utils.qs('#pf-category').value===catId) populateSubcatSelect(catId);
     Toast.show('Subcategory added.', 'success');
@@ -1706,13 +1677,15 @@ const Admin = (() => {
     const s = subs.find(s=>s.id===subId); if(!s) return;
     const newLabel = prompt('Rename subcategory', s.label);
     if(!newLabel || !newLabel.trim()) return;
-    await DataStore.upsertSubcategory({ ...s, label:newLabel.trim() });
+    s.label = newLabel.trim();
+    await DataStore.saveSubcategories(subs);
     await Catalog.refreshAll(); await renderCategoryBlocks();
   }
   async function deleteSubcategory(subId){
     const ok = await ConfirmDialog.ask('Delete this subcategory? Products using it will keep no subcategory.', 'Delete subcategory?');
     if(!ok) return;
-    await DataStore.deleteSubcategory(subId);
+    const subs = Catalog.getSubcategories().filter(s=>s.id!==subId);
+    await DataStore.saveSubcategories(subs);
     await Catalog.refreshAll(); await renderCategoryBlocks();
     Toast.show('Subcategory deleted.', 'success');
   }
@@ -1726,6 +1699,13 @@ const Admin = (() => {
     Utils.qs('#set-maintenance-switch').classList.toggle('on', !!s.maintenance);
     Utils.qs('#set-adminuser').value = admin.username||'';
     Utils.qs('#set-adminpass').value = '';
+    const cfg = JSON.parse(localStorage.getItem('chireva_supabase_config')||'null');
+    if(cfg){ Utils.qs('#set-supa-url').value = cfg.url; Utils.qs('#set-supa-key').value = cfg.anonKey; }
+  }
+  function refreshConnStatus(){
+    const el = Utils.qs('#connStatus');
+    if(DataStore.isConnected()){ el.textContent='● Connected to Supabase'; el.className='conn-status on'; }
+    else { el.textContent='● Using local storage'; el.className='conn-status off'; }
   }
 
   Utils.qs('#settingsSave').addEventListener('click', async ()=>{
@@ -1747,6 +1727,26 @@ const Admin = (() => {
     finally { AdminLoading.hide(); }
   });
 
+  Utils.qs('#connectSupabaseBtn').addEventListener('click', async ()=>{
+    const url = Utils.qs('#set-supa-url').value.trim(); const key = Utils.qs('#set-supa-key').value.trim();
+    if(!url || !key){ Toast.show('Enter both the Supabase project URL and anon key.', 'error'); return; }
+    AdminLoading.show();
+    try{
+      await DataStore.connect(url, key);
+      Toast.show('Connected! Syncing data from Supabase…', 'success');
+      await Catalog.refreshAll(); await renderDashboard(); await renderProductRows(); await renderCategoryBlocks(); populateAdminCatFilter(); refreshConnStatus();
+    }catch(e){ Toast.show('Could not connect: '+(e.message||e), 'error'); }
+    finally { AdminLoading.hide(); }
+  });
+  Utils.qs('#disconnectSupabaseBtn').addEventListener('click', async ()=>{
+    AdminLoading.show();
+    try{
+      DataStore.disconnect(); refreshConnStatus();
+      await Catalog.refreshAll(); await renderDashboard(); await renderProductRows(); await renderCategoryBlocks(); populateAdminCatFilter();
+      Toast.show('Disconnected — back to local storage.', 'info');
+    } finally { AdminLoading.hide(); }
+  });
+
   return { openPanel };
 })();
 
@@ -1754,20 +1754,18 @@ const Admin = (() => {
    Site-wide bootstrapping
    ========================================================================= */
 async function applySettingsToSite(){
-  try{
-    const s = await DataStore.getSettings();
-    Utils.qs('#announceBar').textContent = s.announce || '';
-    Utils.qs('#announceBar').style.display = s.announce ? 'block' : 'none';
-    Utils.qs('#footerInstagram').href = s.instagram || '#';
-    Utils.qs('#footerWhatsapp').href = `https://wa.me/${s.whatsapp||''}`;
-    Utils.qs('#footerEmail').href = `mailto:${s.email||''}`;
-    Utils.qs('#footerEmail').textContent = s.email || 'Email';
-  } catch(e){ /* Supabase unreachable — leave defaults, storefront still renders */ }
+  const s = await DataStore.getSettings();
+  Utils.qs('#announceBar').textContent = s.announce || '';
+  Utils.qs('#announceBar').style.display = s.announce ? 'block' : 'none';
+  Utils.qs('#footerInstagram').href = s.instagram || '#';
+  Utils.qs('#footerWhatsapp').href = `https://wa.me/${s.whatsapp||''}`;
+  Utils.qs('#footerEmail').href = `mailto:${s.email||''}`;
+  Utils.qs('#footerEmail').textContent = s.email || 'Email';
 }
 
 window.addEventListener('DOMContentLoaded', async () => {
   Utils.qs('#year').textContent = new Date().getFullYear();
-  try{ await Analytics.trackVisit(); } catch(e){ /* Supabase unreachable */ }
+  await Analytics.trackVisit();
   await Catalog.init();
   await applySettingsToSite();
 
